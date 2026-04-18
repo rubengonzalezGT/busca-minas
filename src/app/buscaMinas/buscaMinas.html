@@ -45,7 +45,7 @@
     <div class="barra-inferior">
       <div class="dialogo-abajo" *ngIf="dialogoVisible && !juegoTerminado">
         <div class="texto-dialogo">
-          La IA seleccionó este cuadro. ¿Qué quieres registrar?
+          La IA seleccionó este cuadro. ¿Qué hay ahí?
         </div>
 
         <div class="acciones-dialogo">
@@ -65,24 +65,25 @@
             Número
           </button>
 
-        <input
-        *ngIf="opcionElegida === 'numero'"
-        class="entrada-numero"
-        type="text"
-        maxlength="1"
-        [(ngModel)]="numeroEscrito"
-        (input)="marcarNumeroAutomaticamente()"
-        placeholder="1-8"
-        />
+          <!-- El 0 es válido: significa que no hay minas alrededor -->
+          <input
+            *ngIf="opcionElegida === 'numero'"
+            class="entrada-numero"
+            type="text"
+            maxlength="1"
+            [(ngModel)]="numeroEscrito"
+            (input)="marcarNumeroAutomaticamente()"
+            placeholder="0-8"
+          />
 
           <button
             type="button"
             class="boton-confirmar"
             (click)="confirmarJugada()"
             [disabled]="!puedeConfirmar()"
-            >
+          >
             Confirmar
-            </button>
+          </button>
 
           <button class="boton-cancelar" (click)="cancelarJugada()">
             Cancelar
@@ -97,8 +98,8 @@
       <div class="mensaje-mini" *ngIf="!dialogoVisible || juegoTerminado">
         {{
           juegoTerminado
-            ? 'La partida terminó'
-            : 'Esperando respuesta del usuario o próxima jugada de la IA'
+            ? 'La partida terminó. Presiona Reiniciar para jugar de nuevo.'
+            : 'Esperando respuesta del usuario...'
         }}
       </div>
     </div>
