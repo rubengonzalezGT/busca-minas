@@ -1,5 +1,5 @@
 import { CommonModule, isPlatformBrowser } from '@angular/common';
-import { Component, inject, OnInit, PLATFORM_ID } from '@angular/core';
+import { Component, OnInit, inject, PLATFORM_ID, ChangeDetectorRef } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { BuscaMinasApi } from '../servicios/busca-minas-api';
 
@@ -16,11 +16,13 @@ interface Cuadro {
   standalone: true,
   imports: [CommonModule, FormsModule],
   templateUrl: './buscaMinas.html',
-  styleUrls: ['./buscaMinas.scss']
+  styleUrls: ['./buscaMinas.scss'],
+  host: { ngSkipHydration: 'true' }
 })
 export class BuscaMinasComponent implements OnInit {
   private api = inject(BuscaMinasApi);
   private platformId = inject(PLATFORM_ID);
+  private cdr = inject(ChangeDetectorRef);
 
   titulo = 'Busca Minas';
   subtitulo = 'Tablero 10x10';
@@ -29,7 +31,7 @@ export class BuscaMinasComponent implements OnInit {
   columnas = 10;
 
   juegoTerminado = false;
-  mensajeEstado = 'Inicializando tablero...';
+  mensajeEstado = 'Iniciando...';
   totalLevantados = 0;
 
   tablero: Cuadro[][] = [];
@@ -41,74 +43,76 @@ export class BuscaMinasComponent implements OnInit {
   opcionElegida: 'mina' | 'numero' | '' = '';
   numeroEscrito = '';
   errorDialogo = '';
+  cargando = false;
+
+  iniciado = false;
 
   ngOnInit(): void {
     this.armarTablero();
-
     if (isPlatformBrowser(this.platformId)) {
       setTimeout(() => {
-        this.iniciarJuego();
+        if (!this.iniciado) {
+          this.iniciado = true;
+          this.iniciarJuego();
+        }
       }, 0);
     }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // INICIO DEL JUEGO
-  // ─────────────────────────────────────────────────────────────────────────
 
   iniciarJuego(): void {
+    if (this.cargando) return;
+    this.cargando = true;
+
     this.juegoTerminado = false;
     this.totalLevantados = 0;
     this.cuadroActual = null;
     this.limpiarDialogo();
     this.armarTablero();
-
     this.mensajeEstado = 'Creando tablero...';
 
-    // crearTablero ya devuelve la primera jugada de la IA directamente
     this.api.crearTablero().subscribe({
       next: (respuesta: unknown) => {
-        this.mensajeEstado = 'Tablero creado. La IA eligió su primera casilla.';
-        this.procesarJugadaRecibida(respuesta);
+        this.cargando = false;
+        this.mostrarJugada(respuesta);
+        this.cdr.detectChanges();
       },
-      error: (error: unknown) => {
-        this.mensajeEstado = 'No se pudo crear el tablero.';
-        console.error('Error al crear tablero:', error);
+      error: (err: unknown) => {
+        this.cargando = false;
+        this.mensajeEstado = 'Error al crear tablero. Revisa que el backend esté corriendo.';
+        console.error(err);
+        this.cdr.detectChanges();
       }
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // PROCESAR JUGADA RECIBIDA DEL BACKEND
-  // Tanto crearTablero como registrarResultado devuelven una jugada.
-  // Este método centraliza cómo se muestra esa jugada al usuario.
+  reiniciarJuego(): void {
+    this.iniciado = true;
+    this.cargando = false;
+    this.limpiarDialogo();
+
+    this.api.reiniciarTablero().subscribe({
+      next: () => this.iniciarJuego(),
+      error: () => this.iniciarJuego()
+    });
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
 
-  private procesarJugadaRecibida(respuesta: unknown): void {
+  private mostrarJugada(respuesta: unknown): void {
     const jugada = this.extraerJugada(respuesta);
 
     if (!jugada) {
-      this.mensajeEstado = 'La IA devolvió una jugada con formato no esperado.';
-      console.error('Formato inesperado:', respuesta);
+      this.mensajeEstado = 'Formato inesperado del backend.';
       return;
     }
 
     const { fila, columna } = jugada;
-
-    if (fila < 0 || fila >= this.filas || columna < 0 || columna >= this.columnas) {
-      this.mensajeEstado = 'La IA devolvió una posición inválida.';
-      return;
-    }
-
     const cuadro = this.tablero[fila]?.[columna];
 
-    if (!cuadro) {
-      this.mensajeEstado = 'No se pudo ubicar el cuadro indicado por la IA.';
-      return;
-    }
-
-    if (cuadro.levantado) {
-      this.mensajeEstado = 'La IA intentó seleccionar un cuadro ya levantado.';
+    if (!cuadro || cuadro.levantado) {
+      this.mensajeEstado = 'La IA seleccionó un cuadro no disponible.';
       return;
     }
 
@@ -118,210 +122,183 @@ export class BuscaMinasComponent implements OnInit {
     this.opcionElegida = '';
     this.numeroEscrito = '';
     this.errorDialogo = '';
-
     this.mensajeEstado = `IA seleccionó fila ${fila + 1}, columna ${columna + 1}. ¿Qué hay ahí?`;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // CONFIRMAR JUGADA — MINA O NÚMERO
+  // CALCULAR MÁXIMO DE VECINOS SEGÚN POSICIÓN
+  //
+  // En un tablero 10x10:
+  //   - Esquinas (4 casillas): 3 vecinos máximo
+  //   - Bordes no-esquinas (32 casillas): 5 vecinos máximo
+  //   - Interior (64 casillas): 8 vecinos máximo
+  //
+  // Un número mayor a estos máximos es matemáticamente imposible.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private calcularMaxVecinos(fila: number, columna: number): number {
+    const enBordeVertical = fila === 0 || fila === this.filas - 1;
+    const enBordeHorizontal = columna === 0 || columna === this.columnas - 1;
+
+    if (enBordeVertical && enBordeHorizontal) return 3;  // esquina
+    if (enBordeVertical || enBordeHorizontal) return 5;  // borde
+    return 8;                                             // interior
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
 
   confirmarJugada(): void {
-    if (!this.cuadroPendiente) return;
+    if (this.cargando || !this.cuadroPendiente || this.juegoTerminado) return;
+    if (this.opcionElegida === '') { this.errorDialogo = 'Elige mina o número.'; return; }
 
-    if (this.opcionElegida === '') {
-      this.errorDialogo = 'Debes elegir mina o número.';
-      return;
-    }
+    const cuadroAMarcar = this.cuadroPendiente;
+    const { fila, columna } = cuadroAMarcar;
 
-    // ── Caso: era una mina ───────────────────────────────────────────────
     if (this.opcionElegida === 'mina') {
-      const fila = this.cuadroPendiente.fila;
-      const columna = this.cuadroPendiente.columna;
+      this.cargando = true;
 
-      // Marcar visualmente el cuadro como mina
-      this.cuadroPendiente.levantado = true;
-      this.cuadroPendiente.esMina = true;
-      this.cuadroPendiente.numero = null;
-      this.totalLevantados++;
-
-      // Informar al backend que el juego se perdió
       this.api.registrarMina({ fila, columna }).subscribe({
         next: () => {
+          cuadroAMarcar.levantado = true;
+          cuadroAMarcar.esMina = true;
+          this.totalLevantados++;
           this.juegoTerminado = true;
-          this.mensajeEstado = `Juego terminado. Mina en fila ${fila + 1}, columna ${columna + 1}.`;
+          this.cargando = false;
           this.limpiarDialogo();
+          this.mensajeEstado = `Juego terminado. Mina en [${fila + 1}, ${columna + 1}].`;
+          this.cdr.detectChanges();
         },
-        error: (error: unknown) => {
-          // Aunque falle el backend, el juego igual se marca como perdido en el front
+        error: () => {
+          cuadroAMarcar.levantado = true;
+          cuadroAMarcar.esMina = true;
+          this.totalLevantados++;
           this.juegoTerminado = true;
-          this.mensajeEstado = `Mina en fila ${fila + 1}, columna ${columna + 1}. Juego perdido.`;
+          this.cargando = false;
           this.limpiarDialogo();
-          console.error('Error al registrar mina:', error);
+          this.mensajeEstado = `Mina en [${fila + 1}, ${columna + 1}]. Juego perdido.`;
+          this.cdr.detectChanges();
         }
       });
-
       return;
     }
 
-    // ── Caso: había un número ─────────────────────────────────────────────
     if (this.opcionElegida === 'numero') {
-      const numeroLimpio = this.numeroEscrito.trim();
+      const num = this.numeroEscrito.trim();
+      if (!/^[0-8]$/.test(num)) { this.errorDialogo = 'Escribe un número del 0 al 8.'; return; }
 
-      // 0 también es válido: significa que no hay minas alrededor
-      if (!/^[0-8]$/.test(numeroLimpio)) {
-        this.errorDialogo = 'Solo puedes escribir un número del 0 al 8.';
+      const minasAlrededor = Number(num);
+
+      // Validar que el número sea posible según la posición de la casilla.
+      // Una casilla en esquina solo tiene 3 vecinos, no puede tener 4 minas alrededor.
+      const maxVecinos = this.calcularMaxVecinos(fila, columna);
+      if (minasAlrededor > maxVecinos) {
+        const tipoCasilla =
+          maxVecinos === 3 ? 'en una esquina' :
+          maxVecinos === 5 ? 'en un borde' : 'en el interior';
+        this.errorDialogo = `Imposible: esta casilla está ${tipoCasilla} y solo tiene ${maxVecinos} vecinos. Máximo: ${maxVecinos} minas alrededor.`;
         return;
       }
 
-      const minasAlrededor = Number(numeroLimpio);
-      const fila = this.cuadroPendiente.fila;
-      const columna = this.cuadroPendiente.columna;
+      this.cargando = true;
 
-      // registrarResultado devuelve directamente la siguiente jugada de la IA
       this.api.registrarResultado({ fila, columna, minasAlrededor }).subscribe({
         next: (respuesta: unknown) => {
-          if (!this.cuadroPendiente) return;
-
-          // Marcar el cuadro como levantado con su número
-          this.cuadroPendiente.levantado = true;
-          this.cuadroPendiente.esMina = false;
-          this.cuadroPendiente.numero = minasAlrededor;
+          cuadroAMarcar.levantado = true;
+          cuadroAMarcar.esMina = false;
+          cuadroAMarcar.numero = minasAlrededor;
           this.totalLevantados++;
-
-          this.mensajeEstado = `Registrado: fila ${fila + 1}, columna ${columna + 1} → ${minasAlrededor} minas alrededor.`;
+          this.cargando = false;
           this.limpiarDialogo();
+          this.mensajeEstado = `[${fila + 1}, ${columna + 1}] → ${minasAlrededor} minas alrededor.`;
+          this.cdr.detectChanges();
 
-          // La respuesta ya incluye la siguiente jugada — no hace falta un GET extra
           setTimeout(() => {
-            this.procesarJugadaRecibida(respuesta);
+            this.mostrarJugada(respuesta);
+            this.cdr.detectChanges();
           }, 400);
         },
-        error: (error: any) => {
-          this.mensajeEstado = 'No se pudo registrar el resultado en el backend.';
-          console.error('Error al registrar resultado:', error);
-          console.error('Detalle:', error?.error);
+        error: (err: any) => {
+          this.cargando = false;
+          this.errorDialogo = 'Error al registrar. Intenta de nuevo.';
+          console.error(err?.error ?? err);
+          this.cdr.detectChanges();
         }
       });
     }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // REINICIAR
-  // ─────────────────────────────────────────────────────────────────────────
 
-  reiniciarJuego(): void {
-    this.api.reiniciarTablero().subscribe({
-      next: () => {
-        this.mensajeEstado = 'Reiniciando...';
-        setTimeout(() => {
-          this.iniciarJuego();
-        }, 250);
-      },
-      error: (error: unknown) => {
-        this.mensajeEstado = 'No se pudo reiniciar el tablero.';
-        console.error('Error al reiniciar:', error);
-      }
-    });
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // EXTRAER JUGADA DE LA RESPUESTA DEL BACKEND
-  // El backend devuelve { jugada: { fila, columna, ... }, tablero: {...} }
-  // ─────────────────────────────────────────────────────────────────────────
-
-  private extraerJugada(respuesta: unknown): { fila: number; columna: number } | null {
-    if (!respuesta || typeof respuesta !== 'object') return null;
-
-    const data = respuesta as Record<string, unknown>;
-
-    // Formato esperado: { jugada: { fila, columna } }
-    if (data['jugada'] && typeof data['jugada'] === 'object') {
-      const jugada = data['jugada'] as Record<string, unknown>;
-      if (typeof jugada['fila'] === 'number' && typeof jugada['columna'] === 'number') {
-        return { fila: jugada['fila'], columna: jugada['columna'] };
-      }
+  private extraerJugada(r: unknown): { fila: number; columna: number } | null {
+    if (!r || typeof r !== 'object') return null;
+    const d = r as Record<string, unknown>;
+    if (d['jugada'] && typeof d['jugada'] === 'object') {
+      const j = d['jugada'] as Record<string, unknown>;
+      if (typeof j['fila'] === 'number' && typeof j['columna'] === 'number')
+        return { fila: j['fila'], columna: j['columna'] };
     }
-
-    // Fallback: { fila, columna } directo en la raíz
-    if (typeof data['fila'] === 'number' && typeof data['columna'] === 'number') {
-      return { fila: data['fila'], columna: data['columna'] };
-    }
-
+    if (typeof d['fila'] === 'number' && typeof d['columna'] === 'number')
+      return { fila: d['fila'], columna: d['columna'] };
     return null;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // UTILIDADES
-  // ─────────────────────────────────────────────────────────────────────────
-
   armarTablero(): void {
     this.tablero = [];
-    for (let fila = 0; fila < this.filas; fila++) {
-      const filaNueva: Cuadro[] = [];
-      for (let columna = 0; columna < this.columnas; columna++) {
-        filaNueva.push({ fila, columna, levantado: false, esMina: false, numero: null });
-      }
-      this.tablero.push(filaNueva);
+    for (let f = 0; f < this.filas; f++) {
+      const fila: Cuadro[] = [];
+      for (let c = 0; c < this.columnas; c++)
+        fila.push({ fila: f, columna: c, levantado: false, esMina: false, numero: null });
+      this.tablero.push(fila);
     }
   }
 
-  elegirMina(): void {
-    this.opcionElegida = 'mina';
+  limpiarDialogo(): void {
+    this.dialogoVisible = false;
+    this.cuadroPendiente = null;
+    this.cuadroActual = null;
+    this.opcionElegida = '';
     this.numeroEscrito = '';
     this.errorDialogo = '';
   }
 
+  elegirMina(): void {
+    if (!this.cargando) { this.opcionElegida = 'mina'; this.numeroEscrito = ''; this.errorDialogo = ''; }
+  }
+
   elegirNumero(): void {
-    this.opcionElegida = 'numero';
-    this.errorDialogo = '';
+    if (!this.cargando) { this.opcionElegida = 'numero'; this.errorDialogo = ''; }
   }
 
   marcarNumeroAutomaticamente(): void {
-    // 0 también es válido
-    if (/^[0-8]$/.test(this.numeroEscrito.trim())) {
-      this.opcionElegida = 'numero';
-      this.errorDialogo = '';
-    }
+    if (/^[0-8]$/.test(this.numeroEscrito.trim())) { this.opcionElegida = 'numero'; this.errorDialogo = ''; }
   }
 
   puedeConfirmar(): boolean {
-    if (!this.cuadroPendiente || this.juegoTerminado) return false;
+    if (!this.cuadroPendiente || this.juegoTerminado || this.cargando) return false;
     if (this.opcionElegida === 'mina') return true;
     if (this.opcionElegida === 'numero') return /^[0-8]$/.test(this.numeroEscrito.trim());
     return false;
   }
 
   cancelarJugada(): void {
-    this.dialogoVisible = false;
-    this.opcionElegida = '';
-    this.numeroEscrito = '';
-    this.errorDialogo = '';
+    if (this.cargando) return;
+    this.limpiarDialogo();
     this.mensajeEstado = 'Jugada cancelada.';
   }
 
-  limpiarDialogo(): void {
-    this.dialogoVisible = false;
-    this.cuadroPendiente = null;
-    this.opcionElegida = '';
-    this.numeroEscrito = '';
-    this.errorDialogo = '';
-  }
-
-  obtenerTextoCuadro(cuadro: Cuadro): string {
-    if (!cuadro.levantado) return '';
-    if (cuadro.esMina) return '✹';
-    if (cuadro.numero !== null) return String(cuadro.numero);
+  obtenerTextoCuadro(c: Cuadro): string {
+    if (!c.levantado) return '';
+    if (c.esMina) return '✹';
+    if (c.numero !== null) return String(c.numero);
     return '';
   }
 
-  obtenerClaseNumero(cuadro: Cuadro): string {
-    if (!cuadro.levantado || cuadro.numero === null) return '';
-    return `numero-${cuadro.numero}`;
+  obtenerClaseNumero(c: Cuadro): string {
+    if (!c.levantado || c.numero === null) return '';
+    return `numero-${c.numero}`;
   }
 
-  esCuadroActual(cuadro: Cuadro): boolean {
-    if (!this.cuadroActual) return false;
-    return cuadro.fila === this.cuadroActual.fila && cuadro.columna === this.cuadroActual.columna;
+  esCuadroActual(c: Cuadro): boolean {
+    return !!this.cuadroActual && c.fila === this.cuadroActual.fila && c.columna === this.cuadroActual.columna;
   }
 }

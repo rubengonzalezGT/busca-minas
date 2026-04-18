@@ -6,6 +6,10 @@
         <p>{{ subtitulo }}</p>
       </div>
 
+      <!--
+        Reiniciar NO tiene [disabled] — siempre debe poder pulsarse,
+        incluso si el juego está cargando o colgado.
+      -->
       <button class="boton-reiniciar" (click)="reiniciarJuego()">
         Reiniciar
       </button>
@@ -14,11 +18,8 @@
     <div class="panel-info">
       <div class="dato">
         <span class="etiqueta">Estado</span>
-        <span class="valor" [class.terminado]="juegoTerminado">
-          {{ mensajeEstado }}
-        </span>
+        <span class="valor" [class.terminado]="juegoTerminado">{{ mensajeEstado }}</span>
       </div>
-
       <div class="dato">
         <span class="etiqueta">Levantados</span>
         <span class="valor">{{ totalLevantados }}</span>
@@ -52,6 +53,7 @@
           <button
             class="boton-opcion"
             [class.activo]="opcionElegida === 'mina'"
+            [disabled]="cargando"
             (click)="elegirMina()"
           >
             Mina
@@ -60,12 +62,12 @@
           <button
             class="boton-opcion"
             [class.activo]="opcionElegida === 'numero'"
+            [disabled]="cargando"
             (click)="elegirNumero()"
           >
             Número
           </button>
 
-          <!-- El 0 es válido: significa que no hay minas alrededor -->
           <input
             *ngIf="opcionElegida === 'numero'"
             class="entrada-numero"
@@ -73,6 +75,7 @@
             maxlength="1"
             [(ngModel)]="numeroEscrito"
             (input)="marcarNumeroAutomaticamente()"
+            [disabled]="cargando"
             placeholder="0-8"
           />
 
@@ -82,24 +85,28 @@
             (click)="confirmarJugada()"
             [disabled]="!puedeConfirmar()"
           >
-            Confirmar
+            {{ cargando ? 'Enviando...' : 'Confirmar' }}
           </button>
 
-          <button class="boton-cancelar" (click)="cancelarJugada()">
+          <button
+            class="boton-cancelar"
+            [disabled]="cargando"
+            (click)="cancelarJugada()"
+          >
             Cancelar
           </button>
         </div>
 
-        <div class="error-dialogo" *ngIf="errorDialogo">
-          {{ errorDialogo }}
-        </div>
+        <div class="error-dialogo" *ngIf="errorDialogo">{{ errorDialogo }}</div>
       </div>
 
       <div class="mensaje-mini" *ngIf="!dialogoVisible || juegoTerminado">
         {{
           juegoTerminado
-            ? 'La partida terminó. Presiona Reiniciar para jugar de nuevo.'
-            : 'Esperando respuesta del usuario...'
+            ? 'Partida terminada. Presiona Reiniciar.'
+            : cargando
+            ? 'Comunicando con el backend...'
+            : 'Esperando tu respuesta...'
         }}
       </div>
     </div>
